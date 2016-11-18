@@ -1,3 +1,4 @@
+import com.sun.javaws.jnl.LibraryDesc;
 import model.*;
 
 import java.util.*;
@@ -28,10 +29,19 @@ public final class MyStrategy implements Strategy {
 
     static int ANGLES_FACTOR = 36;
     static double MOVE_RADIUS = 70.0;
+    static String NEUTRAL_UNITS = "NEUTRAL_UNITS";
+    static String FRIENDLY_WIZARDS = "FRIENDLY_WIZARDS";
+    static String ENEMIES = "ENEMIES";
+    static String ENEMY_WIZARDS = "ENEMY_WIZARDS";
+    static String FRIENDLY_MINIONS = "FRIENDLY_MINIONS";
+    static String ENEMY_MINIONS = "ENEMY_MINIONS";
+    static String FRIENDLY_BUILDINGS = "FRIENDLY_BUILDINGS";
+    static String ENEMY_BUILDINGS = "ENEMY_BUILDINGS";
+    static String TREES = "TREES";
 
     private double[] getAngles() {
-        double[] angles = new double[36];
-        double sector = StrictMath.PI / 36.0d;
+        double[] angles = new double[ANGLES_FACTOR];
+        double sector = StrictMath.PI * 2.0 / 36.0d;
         for (int i = 0; i < ANGLES_FACTOR; i++) {
             angles[i] = sector * i;
         }
@@ -39,15 +49,15 @@ public final class MyStrategy implements Strategy {
     }
 
 
-    private Point2D[] getNextPoints(Point2D point) {
-        Point2D[] points = new Point2D[ANGLES_FACTOR];
+    private List<Point2D> getNextPoints(Point2D point) {
+        List<Point2D> points = new ArrayList<>(ANGLES_FACTOR);
         int i = 0;
         for (double angle : angles) {
             double x = StrictMath.cos(angle) * MOVE_RADIUS;
             double y = StrictMath.sin(angle) * MOVE_RADIUS;
-            Point2D point2d =  new Point2D(point.x + x, point.y + y);
+            Point2D point2d = new Point2D(point.x + x, point.y + y);
             if (point2d.isValid()) {
-                points[i++] = point2d;
+                points.add(point2d);
             }
         }
         return points;
@@ -58,11 +68,131 @@ public final class MyStrategy implements Strategy {
         double moveSpeed = 0.0;
         double strafeSpeed = 0.0;
         double moveFactor = StrictMath.cos(obstacleAngle);
-        double strafeFactor = -StrictMath.sin(obstacleAngle);
-        moveSpeed = game.getWizardForwardSpeed() * moveFactor * 2.0;
-        strafeSpeed = game.getWizardStrafeSpeed() * strafeFactor * 2.0;
+        double strafeFactor = StrictMath.sin(obstacleAngle);
+        moveSpeed = game.getWizardForwardSpeed() * moveFactor;
+        strafeSpeed = game.getWizardStrafeSpeed() * strafeFactor;
         return new double[]{moveSpeed, strafeSpeed};
     }
+
+    private boolean unitOverlapsWithSelf(Point2D point, List<LivingUnit> units) {
+        for (LivingUnit unit : units) {
+            if (point.getDistanceTo(unit) < (self.getRadius() + unit.getRadius()) * 1.5) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<Point2D> checkCollisions(List<Point2D> trackPoints, Map<String, List<LivingUnit>> objectsMap) {
+        List<Point2D> result = new ArrayList<>();
+        for (Point2D point : trackPoints) {
+            boolean hasCollisions = false;
+            for (Map.Entry<String, List<LivingUnit>> entry : objectsMap.entrySet()) {
+                //Skipping aggregated enemies list
+                if (entry.getKey().equals(ENEMIES)) {
+                    continue;
+                }
+
+                if (unitOverlapsWithSelf(point, entry.getValue())) {
+                    hasCollisions = true;
+                    break;
+                }
+            }
+            if (!hasCollisions) {
+                result.add(point);
+            }
+        }
+        return result;
+    }
+
+    private int getWizardDamageForPoint(Point2D point2D, List<LivingUnit> wizards) {
+        double staffDamage = game.getStaffDamage();
+        double staffRange = game.getWizardCastRange();
+        int potentialWizardDamage = 0;
+        for (LivingUnit w : wizards) {
+            double distance = point2D.getDistanceTo(w);
+            if (distance <= staffRange) {
+                double angle = w.getAngleTo(point2D.x, point2D.y);
+                if (StrictMath.abs(angle) < game.getStaffSector() / 2.0D) {
+                    potentialWizardDamage += staffDamage;
+                }
+            }
+        }
+        return potentialWizardDamage;
+    }
+
+    private int getMinionDamageForPoint(Point2D point2D, List<LivingUnit> minions) {
+        double dartDamage = game.getDartDirectDamage();
+        double dartRange = game.getFetishBlowdartAttackRange();
+        double woodCutterDamage = game.getOrcWoodcutterDamage();
+        double woodCutterRange = game.getOrcWoodcutterAttackRange();
+        int potentialMinionDamage = 0;
+        for (LivingUnit lu : minions) {
+            Minion minion = (Minion) lu;
+            double distance = point2D.getDistanceTo(minion);
+            if (minion.getType() == MinionType.FETISH_BLOWDART) {
+                if (distance <= dartRange) {
+                    double angle = minion.getAngleTo(point2D.x, point2D.y);
+                    if (StrictMath.abs(angle) < game.getFetishBlowdartAttackSector() / 2.0D) {
+                        potentialMinionDamage += dartDamage;
+                    }
+                }
+            } else {
+                if (distance <= woodCutterRange) {
+                    double angle = minion.getAngleTo(point2D.x, point2D.y);
+                    if (StrictMath.abs(angle) < game.getOrcWoodcutterAttackSector() / 2.0D) {
+                        potentialMinionDamage += woodCutterDamage;
+                    }
+                }
+
+            }
+        }
+        return potentialMinionDamage;
+    }
+
+    private int getBuildingDamageForPoint(Point2D point2D, List<LivingUnit> buildings) {
+        double towerDamage = game.getGuardianTowerDamage();
+        double towerRange = game.getGuardianTowerAttackRange();
+        double baseDamage = game.getFactionBaseDamage();
+        double baseRange = game.getFactionBaseAttackRange();
+        int potentialBuildingDamage = 0;
+        for (LivingUnit lu : buildings) {
+            Building building = (Building) lu;
+            double distance = point2D.getDistanceTo(building);
+            if (building.getType() == BuildingType.FACTION_BASE) {
+                if (distance <= baseRange) {
+                    potentialBuildingDamage += baseDamage;
+                }
+            } else {
+                if (distance <= towerRange) {
+                    potentialBuildingDamage += towerDamage;
+                }
+            }
+        }
+        return potentialBuildingDamage;
+    }
+
+
+    private void weightFightPoints(List<Point2D> trackPoints, Map<String, List<LivingUnit>> objectsMap,
+                                   Point2D nextWp, Point2D prevWp) {
+        for (Point2D point2D : trackPoints) {
+            for (Map.Entry<String, List<LivingUnit>> objects : objectsMap.entrySet()) {
+                String key = objects.getKey();
+                List<LivingUnit> units = objects.getValue();
+                if (ENEMY_WIZARDS.equals(key)) {
+                    point2D.appendToCost(-getWizardDamageForPoint(point2D, units));
+
+                } else if (ENEMY_MINIONS.equals(key)) {
+                    point2D.appendToCost(-getMinionDamageForPoint(point2D, units));
+                } else if (ENEMY_BUILDINGS.equals(key)) {
+                    point2D.appendToCost(-getBuildingDamageForPoint(point2D, units));
+                }
+            }
+            point2D.appendToCost(-(int) point2D.getDistanceTo(prevWp));
+        }
+
+    }
+
 
     /**
      * Основной метод стратегии, осуществляющий управление волшебником.
@@ -77,56 +207,58 @@ public final class MyStrategy implements Strategy {
     public void move(Wizard self, World world, Game game, Move move) {
         initializeStrategy(self, game);
         initializeTick(self, world, game, move);
-        Point2D[] trackPoints = getNextPoints(new Point2D(self));
-        LivingUnit[] nearest = getNearest();
-        LivingUnit nearestTarget = nearest[1];
-        LivingUnit nearestObstacle = nearest[0];
-        self.
-        if (nearestObstacle != null) {
-            double obstacleDistance = self.getDistanceTo(nearestObstacle);
-            double obstacleAngle = self.getAngleTo(nearestObstacle);
-            if (obstacleDistance <= self.getRadius() * 3.0) {
-                double[] speeds = getSpeedForStrafe(obstacleAngle);
-                move.setStrafeSpeed(speeds[1]);
-                move.setSpeed(speeds[0]);
+        List<Point2D> trackPoints = getNextPoints(new Point2D(self));
+        Map<String, List<LivingUnit>> nearest = getNearest();
+        //Filter potential collisions here
+        trackPoints = checkCollisions(trackPoints, nearest);
+        trackPoints.add(new Point2D(self));
+
+        Point2D nextWP = getNextWaypoint();
+        Point2D prevWP = getPreviousWaypoint();
+
+
+        List<LivingUnit> enemies = nearest.get(ENEMIES);
+        LivingUnit closestEnemy = enemies.size() > 0 ? enemies.get(0) : null;
+
+        if (closestEnemy != null && self.getDistanceTo(closestEnemy) < self.getCastRange()) {
+            weightFightPoints(trackPoints, nearest, nextWP, prevWP);
+            trackPoints.sort(new MoveCostComparator());
+            Point2D target = trackPoints.get(0);
+            LivingUnit targetEnemy = nearest.get(ENEMIES).get(0);
+            move.setTurn(self.getAngleTo(targetEnemy));
+            double[] speed = getSpeedForStrafe(self.getAngleTo(target.x, target.y));
+            move.setSpeed(speed[0]);
+            move.setStrafeSpeed(speed[1]);
+            move.setCastAngle(self.getAngleTo(nearest.get(ENEMIES).get(0)));
+            move.setAction(ActionType.MAGIC_MISSILE);
+            move.setMinCastDistance(targetEnemy.getDistanceTo(self) - targetEnemy.getRadius() + game.getMagicMissileRadius());
+        } else {
+            for (Point2D point : trackPoints) {
+                point.appendToCost(-(int) point.getDistanceTo(nextWP));
             }
+            trackPoints.sort(new MoveCostComparator());
+            Point2D target = trackPoints.get(0);
+            goTo(target);
         }
 
-        // Если осталось мало жизненной энергии, отступаем к предыдущей ключевой точке на линии.
-        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR) {
-            goTo(getPreviousWaypoint());
-            return;
-        }
-
-        if (nearestTarget != null) {
-            double distance = self.getDistanceTo(nearestTarget);
-
-
-            // ... и он в пределах досягаемости наших заклинаний, ...
-            if (distance <= self.getCastRange()) {
-                // Постоянно двигаемся из-стороны в сторону, чтобы по нам было сложнее попасть.
-                // Считаете, что сможете придумать более эффективный алгоритм уклонения? Попробуйте! ;)
-                move.setStrafeSpeed(random.nextBoolean() ? game.getWizardStrafeSpeed() : -game.getWizardStrafeSpeed());
-                move.setSpeed(0);
-                double angle = self.getAngleTo(nearestTarget);
-
-                // ... то поворачиваемся к цели.
-                move.setTurn(angle);
-
-                // Если цель перед нами, ...
-                if (StrictMath.abs(angle) < game.getStaffSector() / 2.0D) {
-                    // ... то атакуем.
-                    move.setAction(ActionType.MAGIC_MISSILE);
-                    move.setCastAngle(angle);
-                    move.setMinCastDistance(distance - nearestTarget.getRadius() + game.getMagicMissileRadius());
-                }
-
-                return;
-            }
-        }
-
-        // Если нет других действий, просто продвигаемся вперёд.
-        goTo(getNextWaypoint());
+//        if (distance <= self.getCastRange()) {
+//            // Постоянно двигаемся из-стороны в сторону, чтобы по нам было сложнее попасть.
+//            // Считаете, что сможете придумать более эффективный алгоритм уклонения? Попробуйте! ;)
+//            move.setStrafeSpeed(random.nextBoolean() ? game.getWizardStrafeSpeed() : -game.getWizardStrafeSpeed());
+//            move.setSpeed(0);
+//            double angle = self.getAngleTo(nearestTarget);
+//            // ... то поворачиваемся к цели.
+//            move.setTurn(angle);
+//            // Если цель перед нами, ...
+//            if (StrictMath.abs(angle) < game.getStaffSector() / 2.0D) {
+//                // ... то атакуем.
+//                move.setAction(ActionType.MAGIC_MISSILE);
+//                move.setCastAngle(angle);
+//                move.setMinCastDistance(distance - nearestTarget.getRadius() + game.getMagicMissileRadius());
+//            }
+//            return;
+//        }
+//
     }
 
     /**
@@ -287,41 +419,97 @@ public final class MyStrategy implements Strategy {
     /**
      * Находим ближайшую цель для атаки, независимо от её типа и других характеристик.
      */
-    private LivingUnit[] getNearest() {
-        List<LivingUnit> targets = new ArrayList<>();
-        targets.addAll(Arrays.asList(world.getBuildings()));
-        targets.addAll(Arrays.asList(world.getWizards()));
-        targets.addAll(Arrays.asList(world.getMinions()));
-        LivingUnit nearestTarget = null;
-        LivingUnit nearestObstacle = null;
-        double nearestTargetDistance = Double.MAX_VALUE;
-        double nearestObstacleDistance = Double.MAX_VALUE;
-        for (LivingUnit target : targets) {
-            if (self.getId() == target.getId()) {
+
+    public static final class DistanceToUnitComparator implements Comparator<LivingUnit> {
+        Wizard self;
+
+        DistanceToUnitComparator(Wizard self) {
+            this.self = self;
+        }
+
+        @Override
+        public int compare(LivingUnit o1, LivingUnit o2) {
+            return Double.valueOf(self.getDistanceTo(o1) - self.getDistanceTo(o2)).intValue();
+        }
+    }
+
+    public static final class MoveCostComparator implements Comparator<Point2D> {
+
+        @Override
+        public int compare(Point2D o1, Point2D o2) {
+            return Double.valueOf(o2.getCost() - o1.getCost()).intValue();
+        }
+    }
+
+    private Map<String, List<LivingUnit>> getNearest() {
+        Map<String, List<LivingUnit>> nearestMap = new HashMap<>();
+        DistanceToUnitComparator cmp = new DistanceToUnitComparator(self);
+        //TREES
+        List<LivingUnit> trees = new ArrayList<>(Arrays.asList(world.getTrees()));
+        trees.sort(cmp);
+        nearestMap.put(TREES, trees);
+
+        //WIZARDS
+        List<LivingUnit> friendlyWizards = new ArrayList<>();
+        List<LivingUnit> enemyWizards = new ArrayList<>();
+        for (Wizard w : world.getWizards()) {
+            if (w.getId() == self.getId()) {
                 continue;
             }
-            double distance = self.getDistanceTo(target);
-            if (target.getFaction() == Faction.NEUTRAL || target.getFaction() == self.getFaction()) {
-                if (distance < nearestObstacleDistance) {
-                    nearestObstacle = target;
-                    nearestObstacleDistance = distance;
-                }
-            } else if (distance < nearestTargetDistance) {
-                nearestTarget = target;
-                nearestTargetDistance = distance;
-            }
-
-        }
-        Tree[] treeArray = world.getTrees();
-
-        for (Tree tree : treeArray) {
-            double distance = self.getDistanceTo(tree);
-            if (distance < nearestObstacleDistance) {
-                nearestObstacle = tree;
-                nearestObstacleDistance = distance;
+            if (self.getFaction() == w.getFaction()) {
+                friendlyWizards.add(w);
+            } else {
+                enemyWizards.add(w);
             }
         }
-        return new LivingUnit[]{nearestObstacle, nearestTarget};
+        friendlyWizards.sort(cmp);
+        enemyWizards.sort(cmp);
+        nearestMap.put(FRIENDLY_WIZARDS, friendlyWizards);
+        nearestMap.put(ENEMY_WIZARDS, enemyWizards);
+
+        //MINIONS
+        List<LivingUnit> friendlyMinions = new ArrayList<>();
+        List<LivingUnit> enemyMinions = new ArrayList<>();
+        List<LivingUnit> neutralMinions = new ArrayList<>();
+        for (Minion m : world.getMinions()) {
+            if (self.getFaction() == m.getFaction()) {
+                friendlyMinions.add(m);
+            } else if (m.getFaction() == Faction.NEUTRAL) {
+                neutralMinions.add(m);
+            } else {
+                enemyMinions.add(m);
+            }
+        }
+        friendlyMinions.sort(cmp);
+        neutralMinions.sort(cmp);
+        enemyMinions.sort(cmp);
+        nearestMap.put(FRIENDLY_MINIONS, friendlyMinions);
+        nearestMap.put(ENEMY_MINIONS, enemyMinions);
+        nearestMap.put(NEUTRAL_UNITS, neutralMinions);
+
+        //BUILDING
+        List<LivingUnit> friendlyBuildings = new ArrayList<>();
+        List<LivingUnit> enemyBuildings = new ArrayList<>();
+
+        for (Building b : world.getBuildings()) {
+            if (self.getFaction() == b.getFaction()) {
+                friendlyBuildings.add(b);
+            } else {
+                enemyBuildings.add(b);
+            }
+        }
+        friendlyBuildings.sort(cmp);
+        enemyBuildings.sort(cmp);
+        nearestMap.put(FRIENDLY_BUILDINGS, friendlyBuildings);
+        nearestMap.put(ENEMY_BUILDINGS, enemyBuildings);
+        List<LivingUnit> enemies = new ArrayList<>();
+        //ENEMIES
+        enemies.addAll(enemyWizards);
+        enemies.addAll(enemyMinions);
+        enemies.addAll(enemyBuildings);
+        enemies.sort(cmp);
+        nearestMap.put(ENEMIES, enemies);
+        return nearestMap;
     }
 
     /**
@@ -330,6 +518,7 @@ public final class MyStrategy implements Strategy {
     private static final class Point2D {
         private final double x;
         private final double y;
+        private int cost = 0;
 
         private Point2D(Unit unit) {
             this.x = unit.getX();
@@ -341,12 +530,20 @@ public final class MyStrategy implements Strategy {
             this.y = y;
         }
 
+        public void appendToCost(int cost) {
+            this.cost += cost;
+        }
+
         public double getX() {
             return x;
         }
 
         public double getY() {
             return y;
+        }
+
+        public double getCost() {
+            return cost;
         }
 
         public boolean isValid() {
