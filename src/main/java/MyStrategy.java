@@ -1,4 +1,3 @@
-import com.sun.javaws.jnl.LibraryDesc;
 import model.*;
 
 import java.util.*;
@@ -111,7 +110,7 @@ public final class MyStrategy implements Strategy {
         int potentialWizardDamage = 0;
         for (LivingUnit w : wizards) {
             double distance = point2D.getDistanceTo(w);
-            if (distance <= staffRange) {
+            if (distance <= staffRange + self.getRadius()) {
                 double angle = w.getAngleTo(point2D.x, point2D.y);
                 if (StrictMath.abs(angle) < game.getStaffSector() / 2.0D) {
                     potentialWizardDamage += staffDamage;
@@ -138,7 +137,7 @@ public final class MyStrategy implements Strategy {
                     }
                 }
             } else {
-                if (distance <= woodCutterRange) {
+                if (distance <= woodCutterRange + self.getRadius()) {
                     double angle = minion.getAngleTo(point2D.x, point2D.y);
                     if (StrictMath.abs(angle) < game.getOrcWoodcutterAttackSector() / 2.0D) {
                         potentialMinionDamage += woodCutterDamage;
@@ -184,11 +183,11 @@ public final class MyStrategy implements Strategy {
 
                 } else if (ENEMY_MINIONS.equals(key)) {
                     point2D.appendToCost(-getMinionDamageForPoint(point2D, units));
-                } else if (ENEMY_BUILDINGS.equals(key)) {
+                } /*else if (ENEMY_BUILDINGS.equals(key)) {
                     point2D.appendToCost(-getBuildingDamageForPoint(point2D, units));
-                }
+                }*/
             }
-            point2D.appendToCost(-(int) point2D.getDistanceTo(prevWp));
+
         }
 
     }
@@ -215,7 +214,10 @@ public final class MyStrategy implements Strategy {
 
         Point2D nextWP = getNextWaypoint();
         Point2D prevWP = getPreviousWaypoint();
-
+        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR) {
+            goToPoint(trackPoints, prevWP);
+            return;
+        }
 
         List<LivingUnit> enemies = nearest.get(ENEMIES);
         LivingUnit closestEnemy = enemies.size() > 0 ? enemies.get(0) : null;
@@ -223,24 +225,51 @@ public final class MyStrategy implements Strategy {
         if (closestEnemy != null && self.getDistanceTo(closestEnemy) < self.getCastRange()) {
             weightFightPoints(trackPoints, nearest, nextWP, prevWP);
             trackPoints.sort(new MoveCostComparator());
-            Point2D target = trackPoints.get(0);
-            LivingUnit targetEnemy = nearest.get(ENEMIES).get(0);
-            move.setTurn(self.getAngleTo(targetEnemy));
-            double[] speed = getSpeedForStrafe(self.getAngleTo(target.x, target.y));
-            move.setSpeed(speed[0]);
-            move.setStrafeSpeed(speed[1]);
-            move.setCastAngle(self.getAngleTo(nearest.get(ENEMIES).get(0)));
-            move.setAction(ActionType.MAGIC_MISSILE);
-            move.setMinCastDistance(targetEnemy.getDistanceTo(self) - targetEnemy.getRadius() + game.getMagicMissileRadius());
-        } else {
-            for (Point2D point : trackPoints) {
-                point.appendToCost(-(int) point.getDistanceTo(nextWP));
-            }
-            trackPoints.sort(new MoveCostComparator());
-            Point2D target = trackPoints.get(0);
-            goTo(target);
-        }
 
+            Point2D target = trackPoints.get(0);
+            //Most safe point is still unsafe
+            if (target.getCost() < 0) {
+                for (Point2D p : trackPoints) {
+                    p.resetCost();
+                }
+                goToPoint(trackPoints, prevWP);
+                return;
+            } else if (target.getCost() == 0) {
+                for (Point2D point : trackPoints) {
+                    point.appendToCost(-(int) point.getDistanceTo(prevWP));
+                }
+                trackPoints.sort(new MoveCostComparator());
+                target = trackPoints.get(0);
+            } else {
+                target = null;
+            }
+            LivingUnit targetEnemy = nearest.get(ENEMIES).get(0);
+            double turnAngle = self.getAngleTo(targetEnemy);
+            move.setTurn(turnAngle);
+            if (target != null) {
+                double[] speed = getSpeedForStrafe(self.getAngleTo(target.x, target.y));
+                move.setSpeed(speed[0]);
+                move.setStrafeSpeed(speed[1]);
+            }
+            if (StrictMath.abs(turnAngle) < game.getStaffSector() / 2.0D) {
+                move.setCastAngle(self.getAngleTo(nearest.get(ENEMIES).get(0)));
+                move.setAction(ActionType.MAGIC_MISSILE);
+                move.setMinCastDistance(targetEnemy.getDistanceTo(self) - targetEnemy.getRadius() + game.getMagicMissileRadius());
+            }
+        } else {
+            goToPoint(trackPoints, nextWP);
+        }
+    }
+
+    private void goToPoint(List<Point2D> trackPoints, Point2D waypoint) {
+        for (Point2D point : trackPoints) {
+            point.appendToCost(-(int) point.getDistanceTo(waypoint));
+        }
+        trackPoints.sort(new MoveCostComparator());
+        Point2D target = trackPoints.get(0);
+        goTo(target);
+
+    }
 //        if (distance <= self.getCastRange()) {
 //            // Постоянно двигаемся из-стороны в сторону, чтобы по нам было сложнее попасть.
 //            // Считаете, что сможете придумать более эффективный алгоритм уклонения? Попробуйте! ;)
@@ -259,7 +288,7 @@ public final class MyStrategy implements Strategy {
 //            return;
 //        }
 //
-    }
+
 
     /**
      * Инциализируем стратегию.
@@ -544,6 +573,10 @@ public final class MyStrategy implements Strategy {
 
         public double getCost() {
             return cost;
+        }
+
+        public void resetCost() {
+            cost = 0;
         }
 
         public boolean isValid() {
