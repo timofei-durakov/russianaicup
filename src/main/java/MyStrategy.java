@@ -30,8 +30,8 @@ public final class MyStrategy implements Strategy {
     private AttackInterestCostComparator attackInterestCostComparator = new AttackInterestCostComparator();
 
     static int ANGLES_FACTOR = 36;
-    static double MOVE_RADIUS = 70.0;
-    static double COLLISION_RADIUS = 35.0;
+    static double MOVE_RADIUS = 50.0;
+    static double COLLISION_RADIUS = 29.0;
     static double ATTACK_RADIUS = 4.0;
     static String NEUTRAL_UNITS = "NEUTRAL_UNITS";
     static String FRIENDLY_WIZARDS = "FRIENDLY_WIZARDS";
@@ -85,6 +85,7 @@ public final class MyStrategy implements Strategy {
     private List<Point2D> getNextAttackPoints(Point2D point2D) {
         return getNextPoints(point2D, ATTACK_RADIUS);
     }
+
     private List<Point2D> getNextCollisionPoints(Point2D point2D) {
         return getNextPoints(point2D, COLLISION_RADIUS);
     }
@@ -101,7 +102,7 @@ public final class MyStrategy implements Strategy {
 
     private boolean unitOverlapsWithSelf(Point2D point, List<LivingUnit> units) {
         for (LivingUnit unit : units) {
-            if (point.getDistanceTo(unit) < (self.getRadius() + unit.getRadius()) + 10) {
+            if (point.getDistanceTo(unit) <= (self.getRadius() + unit.getRadius())) {
                 return true;
             }
         }
@@ -204,31 +205,39 @@ public final class MyStrategy implements Strategy {
     }
 
 
-    private List<Point2D> weightCollisions(List<Point2D> movePoints, List<Point2D> attackPoints,
-                                           List<Point2D> collisionPoints, Map<String, List<LivingUnit>> objectsMap) {
+    private List<Point2D> weightCollisions(List<Point2D> movePoints, List<Point2D> collisionPoints,
+                                           List<Point2D> attackPoints, Map<String, List<LivingUnit>> objectsMap) {
         List<Point2D> result = new ArrayList<>();
-        int counter = 0;
-        for (Point2D point : movePoints) {
-            if (point == null) {
-                counter++;
-                continue;
-            }
+        int size = movePoints.size();
+        for (int counter = 0; counter < size; counter++) {
+            Point2D movePoint = movePoints.get(counter);
+            boolean movePointCollides = false;
+            Point2D collisionPoint = collisionPoints.get(counter);
+            boolean collisionPointCollides = false;
+            Point2D attackPoint = attackPoints.get(counter);
+            boolean attackPointCollides = false;
+
+
             boolean hasCollisions = false;
             for (Map.Entry<String, List<LivingUnit>> entry : objectsMap.entrySet()) {
                 //Skipping aggregated enemies list
                 if (entry.getKey().equals(ENEMIES)) {
                     continue;
                 }
-
-                if (unitOverlapsWithSelf(point, entry.getValue())) {
-                    hasCollisions = true;
-                    break;
+                if (movePoint == null || unitOverlapsWithSelf(movePoint, entry.getValue())) {
+                    movePointCollides = true;
                 }
+                if (collisionPoint == null || unitOverlapsWithSelf(collisionPoint, entry.getValue())) {
+                    collisionPointCollides = true;
+                }
+                if (attackPoint == null || unitOverlapsWithSelf(attackPoint, entry.getValue())) {
+                    attackPointCollides = true;
+                }
+
             }
-            if (!hasCollisions) {
+            if (!(movePointCollides || collisionPointCollides || attackPointCollides)) {
                 result.add(attackPoints.get(counter));
             }
-            counter++;
         }
         return result;
     }
@@ -271,7 +280,7 @@ public final class MyStrategy implements Strategy {
      */
     @Override
     public void move(Wizard self, World world, Game game, Move move) {
-        if (world.getTickIndex() == 2067) {
+        if (world.getTickIndex() == 2023) {
             System.out.println("bang");
         }
         initializeStrategy(self, game);
@@ -281,7 +290,7 @@ public final class MyStrategy implements Strategy {
         List<Point2D> collisionkPoints = getNextCollisionPoints(new Point2D(self));
         Map<String, List<LivingUnit>> nearest = getNearest();
         //Filter potential collisions here
-        List<Point2D> trackPoints = weightCollisions(movePoints, attackPoints, collisionkPoints, nearest);
+        List<Point2D> trackPoints = weightCollisions(movePoints, collisionkPoints, attackPoints, nearest);
 
         Point2D nextWP = getNextWaypoint();
         Point2D prevWP = getPreviousWaypoint();
@@ -315,7 +324,7 @@ public final class MyStrategy implements Strategy {
                 previousHp = self.getLife();
                 return;
             }
-            
+
             target = null;
 
             List<Enemy> enemiesToAtack = new ArrayList<>();
@@ -664,10 +673,6 @@ public final class MyStrategy implements Strategy {
 
         private Enemy(Game game, LivingUnit unit, double distanceToSelf, double castRange) {
             this.unit = unit;
-            double healthRatio = 1.01 - unit.getLife() / unit.getMaxLife() * 1.0;
-            interest *= healthRatio;
-            double distanceRatio = 1.0 + distanceToSelf / castRange;
-            interest *= distanceRatio;
             if (unit instanceof Wizard) {
 
                 if (unit.getLife() <= game.getStaffDamage()) {
