@@ -2,11 +2,17 @@ import model.*;
 
 import java.util.*;
 
+enum Danger {
+    LOW,
+    NORMAL,
+    HIGH;
+}
+
 public final class MyStrategy implements Strategy {
     private static final double WAYPOINT_RADIUS = 200.0D;
 
     private static final double LOW_HP_FACTOR = 0.40D;
-
+    private static final double HIGH_HP_FACTOR = 0.70D;
     /**
      * Ключевые точки для каждой линии, позволяющие упростить управление перемещением волшебника.
      * <p/>
@@ -84,10 +90,6 @@ public final class MyStrategy implements Strategy {
 
     private List<Point2D> getNextAttackPoints(Point2D point2D) {
         return getNextPoints(point2D, ATTACK_RADIUS);
-    }
-
-    private List<Point2D> getNextCollisionPoints(Point2D point2D) {
-        return getNextPoints(point2D, COLLISION_RADIUS);
     }
 
     private double[] getSpeedForStrafe(double obstacleAngle) {
@@ -205,39 +207,31 @@ public final class MyStrategy implements Strategy {
     }
 
 
-    private List<Point2D> weightCollisions(List<Point2D> movePoints, List<Point2D> collisionPoints,
-                                           List<Point2D> attackPoints, Map<String, List<LivingUnit>> objectsMap) {
+    private List<Point2D> weightCollisions(List<Point2D> movePoints, List<Point2D> attackPoints,
+                                           Map<String, List<LivingUnit>> objectsMap) {
         List<Point2D> result = new ArrayList<>();
-        int size = movePoints.size();
-        for (int counter = 0; counter < size; counter++) {
-            Point2D movePoint = movePoints.get(counter);
-            boolean movePointCollides = false;
-            Point2D collisionPoint = collisionPoints.get(counter);
-            boolean collisionPointCollides = false;
-            Point2D attackPoint = attackPoints.get(counter);
-            boolean attackPointCollides = false;
-
-
+        int counter = 0;
+        for (Point2D point : movePoints) {
+            if (point == null) {
+                counter++;
+                continue;
+            }
             boolean hasCollisions = false;
             for (Map.Entry<String, List<LivingUnit>> entry : objectsMap.entrySet()) {
                 //Skipping aggregated enemies list
                 if (entry.getKey().equals(ENEMIES)) {
                     continue;
                 }
-                if (movePoint == null || unitOverlapsWithSelf(movePoint, entry.getValue())) {
-                    movePointCollides = true;
-                }
-                if (collisionPoint == null || unitOverlapsWithSelf(collisionPoint, entry.getValue())) {
-                    collisionPointCollides = true;
-                }
-                if (attackPoint == null || unitOverlapsWithSelf(attackPoint, entry.getValue())) {
-                    attackPointCollides = true;
-                }
 
+                if (unitOverlapsWithSelf(point, entry.getValue())) {
+                    hasCollisions = true;
+                    break;
+                }
             }
-            if (!(movePointCollides || collisionPointCollides || attackPointCollides)) {
+            if (!hasCollisions) {
                 result.add(attackPoints.get(counter));
             }
+            counter++;
         }
         return result;
     }
@@ -268,6 +262,15 @@ public final class MyStrategy implements Strategy {
         }
     }
 
+    private Danger getDanger() {
+        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR) {
+            return Danger.HIGH;
+        } else if (self.getLife() >= self.getMaxLife() * HIGH_HP_FACTOR) {
+            return Danger.LOW;
+        } else {
+            return Danger.NORMAL;
+        }
+    }
 
     /**
      * Основной метод стратегии, осуществляющий управление волшебником.
@@ -280,22 +283,22 @@ public final class MyStrategy implements Strategy {
      */
     @Override
     public void move(Wizard self, World world, Game game, Move move) {
-        if (world.getTickIndex() == 2023) {
+        System.out.println(world.getTickIndex());
+        if (world.getTickIndex() == 14969) {
             System.out.println("bang");
         }
         initializeStrategy(self, game);
         initializeTick(self, world, game, move);
         List<Point2D> movePoints = getNextMovePoints(new Point2D(self));
         List<Point2D> attackPoints = getNextAttackPoints(new Point2D(self));
-        List<Point2D> collisionkPoints = getNextCollisionPoints(new Point2D(self));
         Map<String, List<LivingUnit>> nearest = getNearest();
         //Filter potential collisions here
-        List<Point2D> trackPoints = weightCollisions(movePoints, collisionkPoints, attackPoints, nearest);
+        List<Point2D> trackPoints = weightCollisions(movePoints, attackPoints, nearest);
 
         Point2D nextWP = getNextWaypoint();
         Point2D prevWP = getPreviousWaypoint();
-
-        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR) {
+        Danger danger = getDanger();
+        if (danger == Danger.HIGH) {
             weightFightPoints(trackPoints, nearest, true, true);
             trackPoints.sort(damageCostComparator);
             if (trackPoints.get(0).getDamageInterest() > 0) {
