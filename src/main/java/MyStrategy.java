@@ -102,9 +102,10 @@ public final class MyStrategy implements Strategy {
         return new double[]{moveSpeed, strafeSpeed};
     }
 
-    private boolean unitOverlapsWithSelf(Point2D point, List<LivingUnit> units) {
+    private boolean unitOverlapsWithSelf(Point2D point, Point2D attackPoint, List<LivingUnit> units) {
         for (LivingUnit unit : units) {
-            if (point.getDistanceTo(unit) <= (self.getRadius() + unit.getRadius())) {
+            double overlapRadius = self.getRadius() + unit.getRadius();
+            if (point.getDistanceTo(unit) <= overlapRadius || attackPoint.getDistanceTo(unit) <= overlapRadius) {
                 return true;
             }
         }
@@ -210,10 +211,10 @@ public final class MyStrategy implements Strategy {
     private List<Point2D> weightCollisions(List<Point2D> movePoints, List<Point2D> attackPoints,
                                            Map<String, List<LivingUnit>> objectsMap) {
         List<Point2D> result = new ArrayList<>();
-        int counter = 0;
-        for (Point2D point : movePoints) {
+        for (int counter = 0; counter < movePoints.size(); counter++) {
+            Point2D point = movePoints.get(counter);
+            Point2D attackPoint = attackPoints.get(counter);
             if (point == null) {
-                counter++;
                 continue;
             }
             boolean hasCollisions = false;
@@ -223,15 +224,14 @@ public final class MyStrategy implements Strategy {
                     continue;
                 }
 
-                if (unitOverlapsWithSelf(point, entry.getValue())) {
+                if (unitOverlapsWithSelf(point, attackPoint, entry.getValue())) {
                     hasCollisions = true;
                     break;
                 }
             }
             if (!hasCollisions) {
-                result.add(attackPoints.get(counter));
+                result.add(attackPoint);
             }
-            counter++;
         }
         return result;
     }
