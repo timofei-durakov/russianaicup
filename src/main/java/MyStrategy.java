@@ -25,7 +25,7 @@ public final class MyStrategy implements Strategy {
 
     private LaneType lane;
     private Point2D[] waypoints;
-    private double previousHp;
+    private int previousLevel;
     private Wizard self;
     private World world;
     private Game game;
@@ -283,12 +283,12 @@ public final class MyStrategy implements Strategy {
      */
     @Override
     public void move(Wizard self, World world, Game game, Move move) {
-        System.out.println(world.getTickIndex());
-        if (world.getTickIndex() == 14969) {
-            System.out.println("bang");
-        }
+
         initializeStrategy(self, game);
         initializeTick(self, world, game, move);
+        if (self.getLevel() > previousLevel) {
+            move.setSkillToLearn(SkillType.values()[previousLevel]);
+        }
         List<Point2D> movePoints = getNextMovePoints(new Point2D(self));
         List<Point2D> attackPoints = getNextAttackPoints(new Point2D(self));
         Map<String, List<LivingUnit>> nearest = getNearest();
@@ -305,6 +305,7 @@ public final class MyStrategy implements Strategy {
                 weightDistanceToWayPoint(trackPoints, prevWP);
                 trackPoints.sort(moveCostComparator);
                 goToPoint(trackPoints, null);
+                previousLevel = self.getLevel();
                 return;
             }
         }
@@ -324,7 +325,7 @@ public final class MyStrategy implements Strategy {
                 trackPoints.sort(moveCostComparator);
                 target = trackPoints.get(0);
                 goTo(target, closestEnemy);
-                previousHp = self.getLife();
+                previousLevel = self.getLevel();
                 return;
             }
 
@@ -343,12 +344,12 @@ public final class MyStrategy implements Strategy {
             enemiesToAtack.sort(attackInterestCostComparator);
             LivingUnit targetEnemy = enemiesToAtack.get(0).getUnit();
             goTo(target, targetEnemy);
-            previousHp = self.getLife();
         } else {
             weightDistanceToWayPoint(trackPoints, nextWP);
             trackPoints.sort(moveCostComparator);
             goToPoint(trackPoints, null);
         }
+        previousLevel = self.getLevel();
     }
 
     private void goToPoint(List<Point2D> trackPoints, LivingUnit enemy) {
@@ -372,7 +373,7 @@ public final class MyStrategy implements Strategy {
     private void initializeStrategy(Wizard self, Game game) {
         if (random == null) {
             random = new Random(game.getRandomSeed());
-
+            previousLevel = self.getLevel();
             double mapSize = game.getMapSize();
 
             waypointsByLane.put(LaneType.MIDDLE, new Point2D[]{
