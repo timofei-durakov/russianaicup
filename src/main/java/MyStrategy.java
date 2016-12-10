@@ -34,10 +34,9 @@ public final class MyStrategy implements Strategy {
     private DamageCostComparator damageCostComparator = new DamageCostComparator();
     private MoveCostComparator moveCostComparator = new MoveCostComparator();
     private AttackInterestCostComparator attackInterestCostComparator = new AttackInterestCostComparator();
-
+    private boolean frostBolt = false;
     static int ANGLES_FACTOR = 36;
     static double MOVE_RADIUS = 50.0;
-    static double COLLISION_RADIUS = 29.0;
     static double ATTACK_RADIUS = 4.0;
     static String NEUTRAL_UNITS = "NEUTRAL_UNITS";
     static String FRIENDLY_WIZARDS = "FRIENDLY_WIZARDS";
@@ -272,6 +271,9 @@ public final class MyStrategy implements Strategy {
         }
     }
 
+
+    int[] skillsToLearn = {5,6,7,8,9,0,1,2,3,4,10,11,12,13,14,15};
+
     /**
      * Основной метод стратегии, осуществляющий управление волшебником.
      * Вызывается каждый тик для каждого волшебника.
@@ -287,7 +289,11 @@ public final class MyStrategy implements Strategy {
         initializeStrategy(self, game);
         initializeTick(self, world, game, move);
         if (self.getLevel() > previousLevel) {
-            move.setSkillToLearn(SkillType.values()[previousLevel]);
+            SkillType skillToLearn = SkillType.values()[skillsToLearn[previousLevel]];
+            if (skillToLearn == SkillType.FROST_BOLT) {
+                frostBolt = true;
+            }
+            move.setSkillToLearn(skillToLearn);
         }
         List<Point2D> movePoints = getNextMovePoints(new Point2D(self));
         List<Point2D> attackPoints = getNextAttackPoints(new Point2D(self));
@@ -513,10 +519,14 @@ public final class MyStrategy implements Strategy {
         double attackAngle;
         if (target != null) {
             attackAngle = self.getAngleTo(target);
-
             if (StrictMath.abs(attackAngle) < game.getStaffSector() / 2.0D) {
+                if (frostBolt
+                        && self.getRemainingCooldownTicksByAction()[3] == 0
+                        && self.getMana() >= game.getFrostBoltManacost()) {
+                    move.setAction(ActionType.FROST_BOLT);
+                } else if (self.getRemainingCooldownTicksByAction()[2] == 0) {
+                    move.setAction(ActionType.MAGIC_MISSILE);}
                 move.setCastAngle(attackAngle);
-                move.setAction(ActionType.MAGIC_MISSILE);
                 move.setMinCastDistance(target.getDistanceTo(self) - target.getRadius() + game.getMagicMissileRadius());
             }
         } else {
