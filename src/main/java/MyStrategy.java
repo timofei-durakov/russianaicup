@@ -11,8 +11,11 @@ enum Danger {
 public final class MyStrategy implements Strategy {
     private static final double WAYPOINT_RADIUS = 200.0D;
 
-    private static final double LOW_HP_FACTOR = 0.40D;
-    private static final double HIGH_HP_FACTOR = 0.70D;
+    private static final double LOW_HP_FACTOR_SKILLS = 0.30D;
+    private static final double HIGH_HP_FACTOR_SKILLS = 0.90D;
+
+    private static final double LOW_HP_FACTOR_NO_SKILLS = 0.20D;
+    private static final double HIGH_HP_FACTOR_NO_SKILLS = 0.90D;
     /**
      * Ключевые точки для каждой линии, позволяющие упростить управление перемещением волшебника.
      * <p/>
@@ -22,7 +25,8 @@ public final class MyStrategy implements Strategy {
     private final Map<LaneType, Point2D[]> waypointsByLane = new EnumMap<>(LaneType.class);
 
     private Random random;
-
+    private double previousHealth;
+    private int tickWithDamage = 0;
     private LaneType lane;
     private Point2D[] waypoints;
     private int previousLevel;
@@ -31,10 +35,16 @@ public final class MyStrategy implements Strategy {
     private Game game;
     private Move move;
     private double angles[] = getAngles();
+    private Map<IntPoint, BuildingMark> buildingMarks;
+    private int friendlyWizards = 1;
+    private int enemyWizards = 0;
+    private int enemyFetish = 0;
+    private List<BuildingMark> marksToCheck;
+    private Map<IntPoint, Building> enemyBuildings;
     private DamageCostComparator damageCostComparator = new DamageCostComparator();
     private MoveCostComparator moveCostComparator = new MoveCostComparator();
     private AttackInterestCostComparator attackInterestCostComparator = new AttackInterestCostComparator();
-    private boolean frostBolt = false;
+    private boolean fireBall = false;
     static int ANGLES_FACTOR = 36;
     static double MOVE_RADIUS = 50.0;
     static double ATTACK_RADIUS = 4.0;
@@ -55,6 +65,19 @@ public final class MyStrategy implements Strategy {
             angles[i] = sector * i;
         }
         return angles;
+    }
+
+    private void getEnemyBuildingsMarks(World world) {
+        Building[] buildingsToMirror = world.getBuildings();
+        Map<IntPoint, BuildingMark> buildingMarks = new HashMap<>();
+        for (Building b : buildingsToMirror) {
+            IntPoint point = new IntPoint((int) Math.round(4000 - b.getX()), (int) Math.round(4000 - b.getY()));
+            Point2D point2D = new Point2D(4000 - b.getX(), 4000 - b.getY());
+            BuildingType type = b.getType();
+            BuildingMark mark = new BuildingMark(type, point2D);
+            buildingMarks.put(point, mark);
+        }
+        this.buildingMarks = buildingMarks;
     }
 
     private Point2D getPotentialPositionForUnit(LivingUnit unit) {
@@ -111,99 +134,160 @@ public final class MyStrategy implements Strategy {
         return false;
     }
 
-    private double getWizardDamageForPoint(Point2D point2D, List<LivingUnit> wizards, boolean potentialDanger) {
-        double staffDamage = game.getStaffDamage();
-        double staffRange = game.getWizardCastRange();
-        double dangerRatio = potentialDanger ? 1.3 : 1.0;
-        double attackRadius = (staffRange + self.getRadius()) * dangerRatio;
-        double attackSector = potentialDanger ? game.getStaffSector() * 10 : game.getStaffSector();
+    private double getWizardsDamageForPoint(Point2D point2D, List<LivingUnit> wizards, Danger danger) {
         double potentialWizardDamage = 0.0;
         for (LivingUnit w : wizards) {
-
-            double distance = point2D.getDistanceTo(w);
-            if (distance > attackRadius * 2.0) {
-                continue;
-            }
-            Point2D potentialPosition = getPotentialPositionForUnit(w);
-            double potentialPositionDistance = Double.MAX_VALUE;
-            if (potentialPosition != null) {
-                potentialPositionDistance = point2D.getDistanceTo(potentialPosition);
-            }
-            double angle = w.getAngleTo(point2D.x, point2D.y);
-            if (distance <= attackRadius || potentialPositionDistance <= attackRadius) {
-                if (StrictMath.abs(angle) < game.getStaffSector() / 2.0 ||
-                        StrictMath.abs(angle) - game.getWizardMaxTurnAngle() < attackSector) {
-                    potentialWizardDamage += staffDamage;
-                }
-            }
+            potentialWizardDamage += getWizardDamageForPoint(point2D, w, danger);
         }
         return potentialWizardDamage;
     }
 
-    private double getMinionDamageForPoint(Point2D point2D, List<LivingUnit> minions, boolean potentialDanger) {
-        double dartDamage = game.getDartDirectDamage();
-        double dartRange = game.getFetishBlowdartAttackRange();
-        double dartSector = potentialDanger ? game.getFetishBlowdartAttackSector() * 10 :
-                game.getFetishBlowdartAttackSector();
-        double dangerRatio = potentialDanger ? 1.3 : 1.0;
-        double dartAttackRadius = dartRange * dangerRatio;
-        double woodCutterDamage = game.getOrcWoodcutterDamage();
-        double woodCutterRange = game.getOrcWoodcutterAttackRange();
-        double woodCutterAttackRadius = (woodCutterRange + 200) * dangerRatio;
-        double woodCutterSector = potentialDanger ? game.getOrcWoodcutterAttackSector() * 10 :
-                game.getOrcWoodcutterAttackSector();
+    private double getWizardDamageForPoint(Point2D point2D, LivingUnit w, Danger danger) {
+        double staffDamage = game.getStaffDamage();
+        double staffRange = game.getWizardCastRange();
+        double dangerRatio = danger == Danger.HIGH ? 1.3 : 1.0;
+        dangerRatio = danger == Danger.LOW ? 0.8 : dangerRatio;
+        double attackRadius = (staffRange + self.getRadius()) * dangerRatio;
+        double attackSector = danger == Danger.HIGH ? game.getStaffSector() * 10 : game.getStaffSector();
+        Wizard wizard = (Wizard) w;
+        double distance = point2D.getDistanceTo(w);
+        if (distance > attackRadius * 2.0) {
+            return 0.0;
+        }
+        Point2D potentialPosition = getPotentialPositionForUnit(w);
+        double potentialPositionDistance = Double.MAX_VALUE;
+        if (potentialPosition != null) {
+            potentialPositionDistance = point2D.getDistanceTo(potentialPosition);
+        }
+        if (wizard.getRemainingActionCooldownTicks() > 40) {
+            return 0.0;
+        }
+        double angle = w.getAngleTo(point2D.x, point2D.y);
+        if (distance <= attackRadius || potentialPositionDistance <= attackRadius) {
+            if (StrictMath.abs(angle) < game.getStaffSector() / 2.0 ||
+                    StrictMath.abs(angle) - game.getWizardMaxTurnAngle() < attackSector) {
+                return staffDamage;
+            }
+        }
+
+        return 0.0;
+    }
+
+    private double getMinionsDamageForPoint(Point2D point2D, List<LivingUnit> minions, Danger danger) {
         double potentialMinionDamage = 0.0;
         for (LivingUnit lu : minions) {
-            Minion minion = (Minion) lu;
-            Point2D potentialPosition = getPotentialPositionForUnit(lu);
-            double distance = point2D.getDistanceTo(minion);
-            double potentialPositionDistance = Double.MAX_VALUE;
-            if (potentialPosition != null) {
-                potentialPositionDistance = point2D.getDistanceTo(potentialPosition);
-            }
-            double angle = minion.getAngleTo(point2D.x, point2D.y);
-            if (minion.getType() == MinionType.FETISH_BLOWDART) {
-                if (distance <= dartAttackRadius || potentialPositionDistance <= dartAttackRadius) {
-                    if (StrictMath.abs(angle) < game.getFetishBlowdartAttackSector() / 2.0D ||
-                            StrictMath.abs(angle) - game.getFetishBlowdartAttackSector() < dartSector) {
-                        potentialMinionDamage += dartDamage;
-                    }
-                }
-            } else {
-                if (distance <= woodCutterAttackRadius || potentialPositionDistance <= woodCutterAttackRadius) {
-                    if (StrictMath.abs(angle) < game.getOrcWoodcutterAttackSector() / 2.0D ||
-                            StrictMath.abs(angle) - game.getOrcWoodcutterAttackSector() < woodCutterSector) {
-                        potentialMinionDamage += woodCutterDamage;
-                    }
-                }
-            }
+            potentialMinionDamage += getMinionDamageForPoint(point2D, lu, danger);
         }
         return potentialMinionDamage;
     }
 
-    private double getBuildingDamageForPoint(Point2D point2D, List<LivingUnit> buildings,
-                                             boolean potentialDanger) {
+    private double getMinionDamageForPoint(Point2D point2D, LivingUnit m, Danger danger) {
+        double dartDamage = game.getDartDirectDamage();
+        double dartRange = game.getFetishBlowdartAttackRange() + game.getMinionRadius() + self.getRadius();
+        double dartSector = danger == Danger.HIGH ? game.getFetishBlowdartAttackSector() * 10 :
+                game.getFetishBlowdartAttackSector();
+        double dangerRatio = danger == Danger.HIGH ? 1.3 : 1.0;
+        double dartAttackRadius = dartRange * dangerRatio;
+        double woodCutterDamage = game.getOrcWoodcutterDamage();
+        double woodCutterRange = game.getOrcWoodcutterAttackRange();
+        double woodCutterAttackRadius = (woodCutterRange + 150) * dangerRatio;
+        double woodCutterSector = danger == Danger.HIGH ? game.getOrcWoodcutterAttackSector() * 10 :
+                game.getOrcWoodcutterAttackSector();
+
+        Minion minion = (Minion) m;
+        Point2D potentialPosition = getPotentialPositionForUnit(m);
+        double distance = point2D.getDistanceTo(minion);
+        double potentialPositionDistance = Double.MAX_VALUE;
+        if (potentialPosition != null) {
+            potentialPositionDistance = point2D.getDistanceTo(potentialPosition);
+        }
+        double angle = minion.getAngleTo(point2D.x, point2D.y);
+        if (minion.getType() == MinionType.FETISH_BLOWDART) {
+            if (minion.getRemainingActionCooldownTicks() > 10) {
+                return 0.0;
+            }
+            if (distance <= dartAttackRadius || potentialPositionDistance <= dartAttackRadius) {
+                if (StrictMath.abs(angle) < game.getFetishBlowdartAttackSector() / 2.0D ||
+                        StrictMath.abs(angle) - game.getFetishBlowdartAttackSector() < dartSector) {
+                    return dartDamage;
+                }
+            }
+        } else {
+            if (distance <= woodCutterAttackRadius || potentialPositionDistance <= woodCutterAttackRadius) {
+                if (StrictMath.abs(angle) < game.getOrcWoodcutterAttackSector() / 2.0D ||
+                        StrictMath.abs(angle) - game.getOrcWoodcutterAttackSector() < woodCutterSector) {
+                    return woodCutterDamage;
+                }
+            }
+        }
+
+        return 0.0;
+    }
+
+    private double getBuildingMarksDamageForPoint(Point2D point2D, List<BuildingMark> buildings,
+                                                  Danger danger) {
+        double potentialBuildingDamage = 0.0;
+        for (BuildingMark lu : buildings) {
+            potentialBuildingDamage += getBuildingMarkDamageForPoint(point2D, lu, danger);
+        }
+        return potentialBuildingDamage;
+    }
+
+    private double getBuildingMarkDamageForPoint(Point2D point2D, BuildingMark b, Danger danger) {
         double towerDamage = game.getGuardianTowerDamage();
         double towerRange = game.getGuardianTowerAttackRange();
         double baseDamage = game.getFactionBaseDamage();
         double baseRange = game.getFactionBaseAttackRange();
-        double dangerRatio = potentialDanger ? 1.1 : 1.0;
-
-        double potentialBuildingDamage = 0.0;
-        for (LivingUnit lu : buildings) {
-            Building building = (Building) lu;
-            double distance = point2D.getDistanceTo(building);
-            if (building.getType() == BuildingType.FACTION_BASE) {
-                if (distance <= baseRange * dangerRatio) {
-                    potentialBuildingDamage += baseDamage;
-                }
-            } else {
-                if (distance <= towerRange * dangerRatio) {
-                    potentialBuildingDamage += towerDamage;
-                }
+        double dangerRatio = danger == Danger.HIGH ? 1.3 : 1.0;
+        double distance = point2D.getDistanceTo(b);
+        if (b.getBuildingType() == BuildingType.FACTION_BASE) {
+            if (distance <= (game.getFactionBaseRadius() + baseRange) * dangerRatio) {
+                return baseDamage;
+            }
+        } else if (b.getBuildingType() == BuildingType.GUARDIAN_TOWER) {
+            if (distance <= (game.getGuardianTowerRadius() + towerRange) * dangerRatio) {
+                return towerDamage;
             }
         }
+        return 0.0;
+    }
+
+    private double getBuildingsDamageForPoint(Point2D point2D, List<LivingUnit> buildings,
+                                              Danger danger) {
+        double potentialBuildingDamage = 0.0;
+        for (LivingUnit lu : buildings) {
+            potentialBuildingDamage += getBuildingDamageForPoint(point2D, lu, danger);
+        }
         return potentialBuildingDamage;
+    }
+
+    private double getBuildingDamageForPoint(Point2D point2D, LivingUnit b,
+                                             Danger danger) {
+        double towerDamage = game.getGuardianTowerDamage();
+        double towerRange = game.getGuardianTowerAttackRange();
+        double baseDamage = game.getFactionBaseDamage();
+        double baseRange = game.getFactionBaseAttackRange();
+        double dangerRatio = danger == Danger.HIGH ? 1.3 : 1.0;
+        Building building = (Building) b;
+        double distance = point2D.getDistanceTo(building);
+
+        if (building.getRemainingActionCooldownTicks() > 100 && distance > 460) {
+            return 0.0;
+        }
+
+//        if (building.getType() == BuildingType.FACTION_BASE) {
+//            if (distance <= (game.getFactionBaseRadius() + baseRange) * dangerRatio) {
+//                return baseDamage;
+//            }
+//        } else {
+        if (building.getType() != BuildingType.FACTION_BASE) {
+            if (distance <= (game.getGuardianTowerRadius() + towerRange) * dangerRatio) {
+                return towerDamage;
+            }
+        }
+
+
+        return 0.0;
     }
 
 
@@ -236,23 +320,26 @@ public final class MyStrategy implements Strategy {
     }
 
     private void weightFightPoints(List<Point2D> trackPoints, Map<String, List<LivingUnit>> objectsMap,
-                                   boolean includeBuildings, boolean eager) {
+                                   Danger danger) {
         for (Point2D point2D : trackPoints) {
             for (Map.Entry<String, List<LivingUnit>> objects : objectsMap.entrySet()) {
                 String key = objects.getKey();
                 List<LivingUnit> units = objects.getValue();
                 if (ENEMY_WIZARDS.equals(key)) {
-                    point2D.appendToDamageInterest(getWizardDamageForPoint(point2D, units, eager));
+                    point2D.appendToDamageInterest(getWizardsDamageForPoint(point2D, units, danger));
 
                 } else if (ENEMY_MINIONS.equals(key)) {
-                    point2D.appendToDamageInterest(getMinionDamageForPoint(point2D, units, eager));
-                } else if (includeBuildings && ENEMY_BUILDINGS.equals(key)) {
-                    point2D.appendToDamageInterest(getBuildingDamageForPoint(point2D, units, eager));
+                    point2D.appendToDamageInterest(getMinionsDamageForPoint(point2D, units, danger));
+                } else if (ENEMY_BUILDINGS.equals(key)) {
+                    point2D.appendToDamageInterest(getBuildingsDamageForPoint(point2D, units, danger));
                 }
 
             }
-
+            if (danger != Danger.LOW) {
+                point2D.appendToDamageInterest(getBuildingMarksDamageForPoint(point2D, marksToCheck, danger));
+            }
         }
+
     }
 
     private void weightDistanceToWayPoint(List<Point2D> trackPoints, Point2D wayPoint) {
@@ -261,18 +348,72 @@ public final class MyStrategy implements Strategy {
         }
     }
 
-    private Danger getDanger() {
-        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR) {
+    private Danger getDangerSkills() {
+        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR_SKILLS) {
             return Danger.HIGH;
-        } else if (self.getLife() >= self.getMaxLife() * HIGH_HP_FACTOR) {
+        } else if (self.getLife() >= self.getMaxLife() * HIGH_HP_FACTOR_SKILLS) {
             return Danger.LOW;
         } else {
             return Danger.NORMAL;
         }
     }
 
+    private Danger getDangerNoSkills() {
+        if (self.getLife() < self.getMaxLife() * LOW_HP_FACTOR_NO_SKILLS) {
+            return Danger.HIGH;
+        } else if (self.getLife() >= self.getMaxLife() * HIGH_HP_FACTOR_NO_SKILLS) {
+            return Danger.LOW;
+        } else {
+            return Danger.NORMAL;
+        }
+    }
 
-    int[] skillsToLearn = {5,6,7,8,9,0,1,2,3,4,10,11,12,13,14,15};
+    private void cleanBuildingMarks(Map<String, List<LivingUnit>> objectsMap) {
+        List<IntPoint> destroyedBuildings = new ArrayList<>();
+        Set<IntPoint> existingBuildings = new HashSet<>();
+        marksToCheck = new ArrayList<>();
+        for (Map.Entry<IntPoint, BuildingMark> buildingMarkEntry : buildingMarks.entrySet()) {
+            for (Map.Entry<String, List<LivingUnit>> entry : objectsMap.entrySet()) {
+                String key = entry.getKey();
+                List<LivingUnit> units = entry.getValue();
+                boolean stopSearching = false;
+                if (FRIENDLY_MINIONS.equals(key) || FRIENDLY_WIZARDS.equals(key)) {
+                    double visionRange;
+                    if (FRIENDLY_MINIONS.equals(key)) {
+                        visionRange = game.getMinionVisionRange();
+                    } else {
+                        visionRange = game.getWizardVisionRange();
+                    }
+                    for (LivingUnit unit : units) {
+                        if (buildingMarkEntry.getKey().getDistanceTo(unit) < visionRange) {
+                            if (!enemyBuildings.containsKey(buildingMarkEntry.getKey())) {
+                                destroyedBuildings.add(buildingMarkEntry.getKey());
+                            } else {
+                                existingBuildings.add(buildingMarkEntry.getKey());
+                            }
+                            stopSearching = true;
+                            break;
+                        }
+
+                    }
+                }
+                if (stopSearching) {
+                    break;
+                }
+            }
+        }
+        for (IntPoint p : destroyedBuildings) {
+            buildingMarks.remove(p);
+
+        }
+        for (Map.Entry<IntPoint, BuildingMark> buildingMarkEntry : buildingMarks.entrySet()) {
+            if (!existingBuildings.contains(buildingMarkEntry.getKey())) {
+                marksToCheck.add(buildingMarkEntry.getValue());
+            }
+        }
+    }
+
+    int[] skillsToLearn = {10, 11, 12, 13, 14, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 18, 19};
 
     /**
      * Основной метод стратегии, осуществляющий управление волшебником.
@@ -285,83 +426,116 @@ public final class MyStrategy implements Strategy {
      */
     @Override
     public void move(Wizard self, World world, Game game, Move move) {
-
-        initializeStrategy(self, game);
+        initializeStrategy(self, game, world);
         initializeTick(self, world, game, move);
         if (self.getLevel() > previousLevel) {
             SkillType skillToLearn = SkillType.values()[skillsToLearn[previousLevel]];
-            if (skillToLearn == SkillType.FROST_BOLT) {
-                frostBolt = true;
+            if (skillToLearn == SkillType.FIREBALL) {
+                fireBall = true;
             }
             move.setSkillToLearn(skillToLearn);
+        }
+        if (self.getLife() < previousHealth) {
+            tickWithDamage = world.getTickIndex();
         }
         List<Point2D> movePoints = getNextMovePoints(new Point2D(self));
         List<Point2D> attackPoints = getNextAttackPoints(new Point2D(self));
         Map<String, List<LivingUnit>> nearest = getNearest();
+        cleanBuildingMarks(nearest);
         //Filter potential collisions here
         List<Point2D> trackPoints = weightCollisions(movePoints, attackPoints, nearest);
 
         Point2D nextWP = getNextWaypoint();
         Point2D prevWP = getPreviousWaypoint();
-        Danger danger = getDanger();
+        Danger danger;
+        if (game.isSkillsEnabled()) {
+            danger = getDangerSkills();
+        } else {
+            danger = getDangerNoSkills();
+        }
         if (danger == Danger.HIGH) {
-            weightFightPoints(trackPoints, nearest, true, true);
+            weightFightPoints(trackPoints, nearest, danger);
             trackPoints.sort(damageCostComparator);
-            if (trackPoints.get(0).getDamageInterest() > 0) {
+            if (!trackPoints.isEmpty() &&
+                    trackPoints.get(0).getDamageInterest() > 0 &&
+                    tickWithDamage + 75 >= world.getTickIndex()) {
                 weightDistanceToWayPoint(trackPoints, prevWP);
                 trackPoints.sort(moveCostComparator);
-                goToPoint(trackPoints, null);
+                goToPoint(trackPoints, null, false);
                 previousLevel = self.getLevel();
+                previousHealth = self.getLife();
                 return;
             }
         }
 
         List<LivingUnit> enemies = nearest.get(ENEMIES);
         LivingUnit closestEnemy = enemies.size() > 0 ? enemies.get(0) : null;
+        Point2D currentPosition = new Point2D(self);
+        trackPoints.add(currentPosition);
+        weightFightPoints(trackPoints, nearest, danger);
+        trackPoints.sort(damageCostComparator);
 
-        if (closestEnemy != null && self.getDistanceTo(closestEnemy) < self.getCastRange()) {
-            Point2D currentPosition = new Point2D(self);
-            trackPoints.add(currentPosition);
-            weightFightPoints(trackPoints, nearest, false, false);
-            trackPoints.sort(damageCostComparator);
-            Point2D target = trackPoints.get(0);
-            //Most safe point is still unsafe
-            if (target.getDamageInterest() > 0) {
-                weightDistanceToWayPoint(trackPoints, prevWP);
-                trackPoints.sort(moveCostComparator);
-                target = trackPoints.get(0);
-                goTo(target, closestEnemy);
-                previousLevel = self.getLevel();
-                return;
+        Point2D target = null;
+        if (!trackPoints.isEmpty()) {
+            target = trackPoints.get(0);
+        }
+        //Most safe point is still unsafe
+
+        if (target != null && target.getDamageInterest() > 0) {
+            weightDistanceToWayPoint(trackPoints, prevWP);
+            trackPoints.sort(moveCostComparator);
+            target = trackPoints.get(0);
+            Enemy enemy = getTarget(target, enemies, danger, false);
+            if (enemy != null) {
+                closestEnemy = enemy.getUnit();
             }
-
+            goTo(target, closestEnemy, true);
+            previousLevel = self.getLevel();
+            previousHealth = self.getLife();
+            return;
+        }
+        if (closestEnemy != null && (target == null || self.getDistanceTo(closestEnemy) < self.getCastRange())) {
             target = null;
-
-            List<Enemy> enemiesToAtack = new ArrayList<>();
-            for (LivingUnit lu : enemies) {
-                double distanceToSelf = lu.getDistanceTo(self);
-                if (distanceToSelf <= self.getCastRange()) {
-                    Enemy e = new Enemy(game, lu, distanceToSelf, self.getCastRange());
-                    enemiesToAtack.add(e);
-                } else {
-                    break;
+            Enemy currentEnemy = getTarget(currentPosition, enemies, danger, false);
+            List<Point2D> safePoints = new ArrayList<>();
+            for (Point2D p : trackPoints) {
+                if (p.getDamageInterest() == 0) {
+                    safePoints.add(p);
                 }
             }
-            enemiesToAtack.sort(attackInterestCostComparator);
-            LivingUnit targetEnemy = enemiesToAtack.get(0).getUnit();
-            goTo(target, targetEnemy);
+            if (!safePoints.isEmpty()) {
+                trackPoints = safePoints;
+            }
+            weightDistanceToWayPoint(trackPoints, nextWP);
+            trackPoints.sort(moveCostComparator);
+            Point2D nextPoint = trackPoints.get(0);
+            Enemy nextEnemy = getTarget(nextPoint, enemies, danger, true);
+            double nextEnemyDistance;
+            nextEnemyDistance = currentPosition.getDistanceTo(nextEnemy.getUnit());
+            LivingUnit targetEnemy = currentEnemy.getUnit();
+            if (!safePoints.isEmpty() && nextPoint.getDamageInterest() <= currentPosition.getDamageInterest()) {
+//                    && !(targetEnemy instanceof Building)) {
+                target = nextPoint;
+            }
+            if (currentEnemy.getInterest() < nextEnemy.getInterest() &&
+                    nextEnemyDistance < self.getCastRange() + nextEnemy.getUnit().getRadius()) {
+                targetEnemy = nextEnemy.getUnit();
+            }
+
+            goTo(target, targetEnemy, false);
         } else {
             weightDistanceToWayPoint(trackPoints, nextWP);
             trackPoints.sort(moveCostComparator);
-            goToPoint(trackPoints, null);
+            goToPoint(trackPoints, null, false);
         }
         previousLevel = self.getLevel();
+        previousHealth = self.getLife();
     }
 
-    private void goToPoint(List<Point2D> trackPoints, LivingUnit enemy) {
+    private void goToPoint(List<Point2D> trackPoints, LivingUnit enemy, boolean forceFrosBolt) {
         if (trackPoints.size() > 0) {
             Point2D target = trackPoints.get(0);
-            goTo(target, enemy);
+            goTo(target, enemy, forceFrosBolt);
         } else {
             //TODO(tdurakov): HOW???
         }
@@ -370,16 +544,38 @@ public final class MyStrategy implements Strategy {
     }
 
 
+    public Enemy getTarget(Point2D target, List<LivingUnit> enemies, Danger danger, boolean checkPotential) {
+        Enemy targetEnemy = null;
+        List<Enemy> enemiesToAtack = new ArrayList<>();
+        double currentRange = checkPotential ? self.getVisionRange() + 500 : self.getCastRange();
+        for (LivingUnit lu : enemies) {
+            double distanceToSelf = target.getDistanceTo(lu);
+            if (distanceToSelf <= currentRange + lu.getRadius()) {
+                Enemy e = new Enemy(game, lu, target, danger);
+                enemiesToAtack.add(e);
+            } else {
+                break;
+            }
+        }
+        enemiesToAtack.sort(attackInterestCostComparator);
+        if (enemiesToAtack.size() > 0)
+            targetEnemy = enemiesToAtack.get(0);
+        return targetEnemy;
+    }
+
     /**
      * Инциализируем стратегию.
      * <p/>
      * Для этих целей обычно можно использовать конструктор, однако в данном случае мы хотим инициализировать генератор
      * случайных чисел значением, полученным от симулятора игры.
      */
-    private void initializeStrategy(Wizard self, Game game) {
+    private void initializeStrategy(Wizard self, Game game, World world) {
         if (random == null) {
             random = new Random(game.getRandomSeed());
+            getEnemyBuildingsMarks(world);
             previousLevel = self.getLevel();
+            previousHealth = self.getLife();
+            tickWithDamage = -10;
             double mapSize = game.getMapSize();
 
             waypointsByLane.put(LaneType.MIDDLE, new Point2D[]{
@@ -515,19 +711,22 @@ public final class MyStrategy implements Strategy {
     /**
      * Простейший способ перемещения волшебника.
      */
-    private void goTo(Point2D point, LivingUnit target) {
+    private void goTo(Point2D point, LivingUnit target, boolean forceFireBall) {
         double attackAngle;
         if (target != null) {
             attackAngle = self.getAngleTo(target);
             if (StrictMath.abs(attackAngle) < game.getStaffSector() / 2.0D) {
-                if (frostBolt
-                        && self.getRemainingCooldownTicksByAction()[3] == 0
-                        && self.getMana() >= game.getFrostBoltManacost()) {
-                    move.setAction(ActionType.FROST_BOLT);
+                if (fireBall
+                        && self.getRemainingCooldownTicksByAction()[4] == 0
+                        && self.getMana() >= game.getFireballManacost()
+                        && (target instanceof Wizard || target instanceof Building || (forceFireBall
+                        && target.getLife() > game.getMagicMissileDirectDamage()))) {
+                    move.setAction(ActionType.FIREBALL);
                 } else if (self.getRemainingCooldownTicksByAction()[2] == 0) {
-                    move.setAction(ActionType.MAGIC_MISSILE);}
+                    move.setAction(ActionType.MAGIC_MISSILE);
+                }
                 move.setCastAngle(attackAngle);
-                move.setMinCastDistance(target.getDistanceTo(self) - target.getRadius() + game.getMagicMissileRadius());
+                move.setMinCastDistance(point.getDistanceTo(target) - target.getRadius() + game.getMagicMissileRadius());
             }
         } else {
             attackAngle = self.getAngleTo(point.getX(), point.getY());
@@ -625,8 +824,14 @@ public final class MyStrategy implements Strategy {
                 continue;
             }
             if (self.getFaction() == w.getFaction()) {
+                if (self.getDistanceTo(w) <= self.getVisionRange()) {
+                    this.friendlyWizards++;
+                }
                 friendlyWizards.add(w);
             } else {
+                if (self.getDistanceTo(w) <= self.getVisionRange()) {
+                    this.enemyWizards++;
+                }
                 enemyWizards.add(w);
             }
         }
@@ -643,9 +848,17 @@ public final class MyStrategy implements Strategy {
             if (self.getFaction() == m.getFaction()) {
                 friendlyMinions.add(m);
             } else if (m.getFaction() == Faction.NEUTRAL) {
-                neutralMinions.add(m);
+                if (m.getRemainingActionCooldownTicks() > 0 || m.getSpeedX() != 0 || m.getSpeedY() != 0) {
+                    enemyMinions.add(m);
+                } else {
+                    neutralMinions.add(m);
+                }
             } else {
                 enemyMinions.add(m);
+                if (self.getDistanceTo(m) <= self.getVisionRange() && m.getType() == MinionType.FETISH_BLOWDART) {
+                    this.enemyFetish++;
+                }
+
             }
         }
         friendlyMinions.sort(cmp);
@@ -658,12 +871,13 @@ public final class MyStrategy implements Strategy {
         //BUILDING
         List<LivingUnit> friendlyBuildings = new ArrayList<>();
         List<LivingUnit> enemyBuildings = new ArrayList<>();
-
+        this.enemyBuildings = new HashMap<>();
         for (Building b : world.getBuildings()) {
             if (self.getFaction() == b.getFaction()) {
                 friendlyBuildings.add(b);
             } else {
                 enemyBuildings.add(b);
+                this.enemyBuildings.put(new IntPoint((int) Math.round(b.getX()), (int) Math.round(b.getY())), b);
             }
         }
         friendlyBuildings.sort(cmp);
@@ -680,34 +894,83 @@ public final class MyStrategy implements Strategy {
         return nearestMap;
     }
 
-    private static final class Enemy {
+    private final class BuildingMark {
+        private BuildingType buildingType;
+        private Point2D point;
+
+        BuildingMark(BuildingType buildingType, Point2D point) {
+            this.point = point;
+            this.buildingType = buildingType;
+        }
+
+        public BuildingType getBuildingType() {
+            return buildingType;
+        }
+
+        public void setBuildingType(BuildingType buildingType) {
+            this.buildingType = buildingType;
+        }
+
+        public Point2D getPoint() {
+            return point;
+        }
+
+        public void setPoint(Point2D point) {
+            this.point = point;
+        }
+    }
+
+    private final class Enemy {
         private LivingUnit unit;
         private double interest = 1.0;
 
-
-        private Enemy(Game game, LivingUnit unit, double distanceToSelf, double castRange) {
+        private Enemy(Game game, LivingUnit unit, Point2D target, Danger danger) {
             this.unit = unit;
+            interest = game.getMagicMissileDirectDamage();
+            interest *= (2 - unit.getLife() / unit.getMaxLife());
+            boolean checkDamage = danger != Danger.LOW;
             if (unit instanceof Wizard) {
-
-                if (unit.getLife() <= game.getStaffDamage()) {
+                interest *= 100;
+                if (unit.getLife() <= game.getMagicMissileDirectDamage()) {
                     interest *= game.getWizardEliminationScoreFactor() == 0.0 ? 1.0 : 1 + game.getWizardEliminationScoreFactor();
                     interest *= 10.0;
                 } else {
-                    interest = game.getWizardDamageScoreFactor() == 0.0 ? 1.0 : 1 + game.getWizardDamageScoreFactor();
+                    interest *= game.getWizardDamageScoreFactor() == 0.0 ? 1.0 : 1 + game.getWizardDamageScoreFactor();
+                }
+                if (checkDamage) {
+                    interest += getWizardDamageForPoint(target, unit, danger);
                 }
             } else if (unit instanceof Building) {
-                if (unit.getLife() <= game.getStaffDamage()) {
+//                Building b = (Building) unit;
+//                if (b.getType() == BuildingType.FACTION_BASE) {
+//                    interest = game.getFactionBaseDamage();
+//                } else {
+//                    interest = game.getGuardianTowerDamage();
+//                }
+                interest *= 50;
+                if (unit.getLife() <= game.getMagicMissileDirectDamage()) {
                     interest *= game.getBuildingEliminationScoreFactor() == 0.0 ? 1.0 : 1 + game.getBuildingEliminationScoreFactor();
-                    interest *= 10.0;
+                    interest *= 5.0;
                 } else {
                     interest *= game.getBuildingDamageScoreFactor() == 0.0 ? 1.0 : 1 + game.getBuildingDamageScoreFactor();
                 }
+                if (checkDamage) {
+                    interest += getBuildingDamageForPoint(target, unit, danger);
+                }
             } else if (unit instanceof Minion) {
-                if (unit.getLife() <= game.getStaffDamage()) {
+                Minion m = (Minion) unit;
+                if (m.getType() == MinionType.FETISH_BLOWDART && enemyFetish > 1) {
+                    interest *= 50;
+                }
+
+                if (unit.getLife() <= game.getMagicMissileDirectDamage()) {
                     interest *= game.getMinionEliminationScoreFactor() == 0.0 ? 1.0 : 1 + game.getMinionEliminationScoreFactor();
                     interest *= 10.0;
                 } else {
                     interest *= game.getMinionDamageScoreFactor() == 0.0 ? 1.0 : 1 + game.getMinionDamageScoreFactor();
+                }
+                if (checkDamage) {
+                    interest += getMinionDamageForPoint(target, unit, danger);
                 }
             }
 
@@ -719,6 +982,47 @@ public final class MyStrategy implements Strategy {
 
         public LivingUnit getUnit() {
             return unit;
+        }
+    }
+
+    private final class IntPoint {
+        private int x;
+        private int y;
+
+        public IntPoint(int x, int y) {
+            this.x = x;
+            this.y = y;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            IntPoint intPoint = (IntPoint) o;
+
+            if (x != intPoint.x) return false;
+            return y == intPoint.y;
+
+        }
+
+        @Override
+        public int hashCode() {
+            int result = x;
+            result = 31 * result + y;
+            return result;
+        }
+
+        public double getDistanceTo(double x, double y) {
+            return StrictMath.hypot(this.x - x, this.y - y);
+        }
+
+        public double getDistanceTo(Point2D point) {
+            return getDistanceTo(point.x, point.y);
+        }
+
+        public double getDistanceTo(Unit unit) {
+            return getDistanceTo(unit.getX(), unit.getY());
         }
     }
 
@@ -798,6 +1102,10 @@ public final class MyStrategy implements Strategy {
 
         public double getDistanceTo(Unit unit) {
             return getDistanceTo(unit.getX(), unit.getY());
+        }
+
+        public double getDistanceTo(BuildingMark unit) {
+            return getDistanceTo(unit.getPoint());
         }
     }
 
